@@ -19,17 +19,16 @@ export type CalibrationPoint = {
   yFrac: number;
 };
 
-// 9-point grid: corners, edges, center
+// 8-point perimeter grid: corners and midpoints of each screen edge
 export const CALIBRATION_POINTS: CalibrationPoint[] = [
-  { id: 'tl',  label: 'Top-left',     xFrac: 0.1,  yFrac: 0.1  },
-  { id: 'tc',  label: 'Top-center',   xFrac: 0.5,  yFrac: 0.1  },
-  { id: 'tr',  label: 'Top-right',    xFrac: 0.9,  yFrac: 0.1  },
-  { id: 'ml',  label: 'Middle-left',  xFrac: 0.1,  yFrac: 0.5  },
-  { id: 'mc',  label: 'Center',       xFrac: 0.5,  yFrac: 0.5  },
-  { id: 'mr',  label: 'Middle-right', xFrac: 0.9,  yFrac: 0.5  },
-  { id: 'bl',  label: 'Bottom-left',  xFrac: 0.1,  yFrac: 0.9  },
-  { id: 'bc',  label: 'Bottom-center',xFrac: 0.5,  yFrac: 0.9  },
-  { id: 'br',  label: 'Bottom-right', xFrac: 0.9,  yFrac: 0.9  },
+  { id: 'tl',  label: 'Top-left',     xFrac: 0.0,  yFrac: 0.0 },
+  { id: 'tc',  label: 'Top-center',   xFrac: 0.5,  yFrac: 0.0 },
+  { id: 'tr',  label: 'Top-right',    xFrac: 1.0,  yFrac: 0.0 },
+  { id: 'ml',  label: 'Middle-left',  xFrac: 0.0,  yFrac: 0.5 },
+  { id: 'mr',  label: 'Middle-right', xFrac: 1.0,  yFrac: 0.5 },
+  { id: 'bl',  label: 'Bottom-left',  xFrac: 0.0,  yFrac: 1.0 },
+  { id: 'bc',  label: 'Bottom-center',xFrac: 0.5,  yFrac: 1.0 },
+  { id: 'br',  label: 'Bottom-right', xFrac: 1.0,  yFrac: 1.0 },
 ];
 
 type IrisSample = { offsetX: number; offsetY: number };
