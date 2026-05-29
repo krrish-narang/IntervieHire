@@ -191,8 +191,11 @@ function detectGazeAway(
 
   if (Math.abs(useX) >= effectiveThresholdX || Math.abs(useY) >= effectiveThresholdY) {
     const horizontal = useX > 0 ? 'left' : 'right';
-    const vertical = useY < 0 ? 'up' : 'down';
-    const direction = Math.abs(useX) > Math.abs(useY) ? horizontal : vertical;
+    const vertical = useY > 0 ? 'down' : 'up';
+    // Add deadzone: require horizontal to be 1.25x larger than vertical to avoid false positives
+    // This prevents the "looking right when looking at monitor" issue
+    const horizontalDeadzoneMargin = 1.25;
+    const direction = Math.abs(useX) * horizontalDeadzoneMargin > Math.abs(useY) ? horizontal : vertical;
     return {
       away: true,
       direction,
@@ -384,7 +387,7 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
           calibrationRef.current?.neutralY ?? 0,
           calibrationRef.current,
           gazeFilterRef,
-          0.28,
+          0.18, // reduced from 0.28 for better filtering of false positives
         );
 
         setState((current) => ({
