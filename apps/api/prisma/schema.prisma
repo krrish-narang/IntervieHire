@@ -1,0 +1,146 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleType {
+  CONSULTING
+  PRODUCT_MANAGEMENT
+  BUSINESS_ANALYST
+  FOUNDERS_OFFICE
+  GENERAL
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum SessionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  EVALUATED
+  CANCELLED
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model Company {
+  id           String             @id @default(cuid())
+  name         String
+  slug         String             @unique
+  description  String?
+  logoUrl      String?
+  primaryColor String             @default("#0f766e")
+  settings     Json               @default("{}")
+  webhooks     Json               @default("{}")
+  reportEmail  String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  jobRoles     JobRole[]
+  candidates   Candidate[]
+  questions    Question[]
+  sessions     InterviewSession[]
+}
+
+model Candidate {
+  id           String             @id @default(cuid())
+  companyId    String
+  fullName     String
+  email        String
+  phone        String?
+  resumeText   String?
+  parsedResume Json               @default("{}")
+  atsScore     Float              @default(0)
+  atsBreakdown Json               @default("{}")
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sessions     InterviewSession[]
+
+  @@unique([companyId, email])
+}
+
+model JobRole {
+  id                 String             @id @default(cuid())
+  companyId          String
+  title              String
+  roleType           RoleType           @default(GENERAL)
+  description        String
+  requirements       String
+  primaryCriteria    String[]
+  secondaryCriteria  String[]
+  atsScoringWeights  Json
+  evaluationCriteria Json               @default("{}")
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  company            Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  questions          Question[]
+  sessions           InterviewSession[]
+}
+
+model Question {
+  id                   String   @id @default(cuid())
+  companyId            String
+  jobRoleId            String?
+  text                 String
+  roleApplicability    RoleType[]
+  difficulty           Difficulty @default(MEDIUM)
+  topicCategories      String[]
+  estimatedMinutes     Int        @default(4)
+  aiEvaluationGuidance String
+  effectivenessRating  Float      @default(0)
+  version              Int        @default(1)
+  isActive             Boolean    @default(true)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  company              Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  jobRole              JobRole?   @relation(fields: [jobRoleId], references: [id], onDelete: SetNull)
+}
+
+model InterviewSession {
+  id             String         @id @default(cuid())
+  companyId      String
+  candidateId    String
+  jobRoleId      String
+  status         SessionStatus  @default(SCHEDULED)
+  websocketId    String?
+  ueSocketId     String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  scheduledAt    DateTime?
+  transcript     Json           @default("[]")
+  avatarProvider String         @default("ue5_pixel_streaming")
+  evaluation     Json?
+  reportUrl      String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  company        Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  candidate      Candidate      @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  jobRole        JobRole        @relation(fields: [jobRoleId], references: [id], onDelete: Cascade)
+  proctoringLogs ProctoringLog[]
+}
+
+model ProctoringLog {
+  id         String            @id @default(cuid())
+  sessionId  String
+  eventType  String
+  severity   Severity
+  metadata   Json              @default("{}")
+  occurredAt DateTime          @default(now())
+  createdAt  DateTime          @default(now())
+  session    InterviewSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, severity])
+}
