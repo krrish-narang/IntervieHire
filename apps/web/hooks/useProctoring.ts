@@ -10,8 +10,6 @@ import {
 } from '@mediapipe/tasks-vision';
 import type { ProctoringPayload, Severity } from '@interviehire/shared';
 import type { CalibrationResult } from './useGazeCalibration';
-import { buildSafeEightDotCalibration, type SafeEightDotCalibration } from './eightDotCalibrationGuardV3';
-import { FALLBACK_GAZE_THRESHOLD_X, FALLBACK_GAZE_THRESHOLD_Y } from './proctoringGazeThresholdsV3';
 
 type ProctoringEvent = {
   eventType: string;
@@ -31,8 +29,6 @@ type DetectionState = {
   phoneDetected: boolean;
   gazeAwayDetected: boolean;
   gazeDirection: string;
-  headMovementDetected: boolean;
-  headPoseDeviationDegrees: number;
   lastObservationAt: number | null;
 };
 
@@ -44,25 +40,10 @@ const LIVE_INTERVAL_MS = 500; // check twice as often for lower lag
 const MULTI_FACE_CONFIRM_MS = 1500;
 const PHONE_CONFIRM_MS = 1000;
 const GAZE_CONFIRM_MS = 1000; // faster gaze confirmation
-const HEAD_POSE_CONFIRM_MS = 1200;
-const HEAD_POSE_ROTATION_THRESHOLD_DEG = 23;
-const HEAD_POSE_AXIS_THRESHOLD_DEG = 23;
 const GAZE_BLENDSHAPE_THRESHOLD = 0.8; // more sensitive blendshape threshold
-// Blendshapes are used only to correct vertical direction when geometry already says gaze is away.
-// Looking down can make the iris partially occluded by the eyelid, which sometimes makes raw iris geometry look like "up".
-const VERTICAL_BLENDSHAPE_DIRECTION_THRESHOLD = 0.33;
-const VERTICAL_BLENDSHAPE_MARGIN = 0.08;
-// Downward gaze is usually weaker in iris geometry because the eyelids partially cover the iris.
-// Keep normal up/left/right sensitivity unchanged, but make positive-Y/downward movement easier to trigger.
-const DOWNWARD_GAZE_THRESHOLD_FACTOR = 1.55;
-const MIN_DOWNWARD_GAZE_THRESHOLD = 0.065;
-const DOWNWARD_BLENDSHAPE_AWAY_THRESHOLD = 0.4;
-const DOWNWARD_BLENDSHAPE_MARGIN = 0.1;
-const DOWNWARD_GEOMETRY_SUPPORT_FACTOR = 0.4;
-const MIN_DOWNWARD_GEOMETRY_SUPPORT = 0.03;
 // Fallback geometry thresholds used when no calibration has been run
-const DEFAULT_GAZE_THRESHOLD_X = FALLBACK_GAZE_THRESHOLD_X;
-const DEFAULT_GAZE_THRESHOLD_Y = FALLBACK_GAZE_THRESHOLD_Y;
+const DEFAULT_GAZE_THRESHOLD_X = 0.32;
+const DEFAULT_GAZE_THRESHOLD_Y = 0.34;
 
 function isPhoneDetection(result: ObjectDetectorResult) {
   return (result.detections || []).some((detection) =>
@@ -83,117 +64,30 @@ function getFacePoint(landmarks: FaceLandmarkerResult['faceLandmarks'][number] |
   return landmarks?.[index];
 }
 
-
-type HeadPose = {
-  yaw: number;
-  pitch: number;
-  roll: number;
-  source: 'matrix' | 'landmarks';
-};
-
-type HeadPoseDeviation = {
-  yaw: number;
-  pitch: number;
-  roll: number;
-  magnitude: number;
-  maxAxis: number;
-  tooMuch: boolean;
-};
-
-function radiansToDegrees(value: number) {
-  return (value * 180) / Math.PI;
-}
-
-function normalizeAngleDelta(current: number, baseline: number) {
-  let delta = current - baseline;
-  while (delta > 180) delta -= 360;
-  while (delta < -180) delta += 360;
-  return delta;
-}
-
-function getHeadPoseFromMatrix(result: FaceLandmarkerResult | null): HeadPose | null {
-  const matrix = (result as any)?.facialTransformationMatrixes?.[0];
-  const data = matrix?.data ?? matrix?.matrix ?? matrix;
-
-  if (!data || typeof data.length !== 'number' || data.length < 16) return null;
-
-  // MediaPipe exposes a 4x4 facial transformation matrix. We only need the 3x3 rotation portion.
-  // These Euler values are used as relative deltas from calibration, so tiny convention differences are okay.
-  const values = Array.from(data as ArrayLike<number>);
-  const r00 = values[0];
-  const r10 = values[4];
-  const r20 = values[8];
-  const r21 = values[9];
-  const r22 = values[10];
-
-  const sy = Math.sqrt(r00 * r00 + r10 * r10);
-  const singular = sy < 1e-6;
-  const pitch = singular ? 0 : radiansToDegrees(Math.atan2(r21, r22));
-  const yaw = radiansToDegrees(Math.atan2(-r20, sy));
-  const roll = radiansToDegrees(Math.atan2(r10, r00));
-
-  if (![yaw, pitch, roll].every(Number.isFinite)) return null;
-  return { yaw, pitch, roll, source: 'matrix' };
-}
-
-function getHeadPoseFromLandmarks(result: FaceLandmarkerResult | null): HeadPose | null {
-  const landmarks = result?.faceLandmarks?.[0];
-  const leftEyeOuter = getFacePoint(landmarks, 33);
-  const rightEyeOuter = getFacePoint(landmarks, 263);
-  const leftFace = getFacePoint(landmarks, 234);
-  const rightFace = getFacePoint(landmarks, 454);
-  const noseTip = getFacePoint(landmarks, 1);
-  const forehead = getFacePoint(landmarks, 10);
-  const chin = getFacePoint(landmarks, 152);
-
-  if (!leftEyeOuter || !rightEyeOuter || !leftFace || !rightFace || !noseTip || !forehead || !chin) return null;
-
-  const faceWidth = Math.max(Math.abs(rightFace.x - leftFace.x), 0.0001);
-  const faceHeight = Math.max(Math.abs(chin.y - forehead.y), 0.0001);
-  const eyeMidX = (leftEyeOuter.x + rightEyeOuter.x) / 2;
-  const eyeMidY = (leftEyeOuter.y + rightEyeOuter.y) / 2;
-
-  const yaw = ((noseTip.x - eyeMidX) / faceWidth) * 90;
-  const pitch = ((noseTip.y - eyeMidY) / faceHeight) * 90;
-  const roll = radiansToDegrees(Math.atan2(rightEyeOuter.y - leftEyeOuter.y, rightEyeOuter.x - leftEyeOuter.x));
-
-  if (![yaw, pitch, roll].every(Number.isFinite)) return null;
-  return { yaw, pitch, roll, source: 'landmarks' };
-}
-
-function estimateHeadPose(result: FaceLandmarkerResult | null): HeadPose | null {
-  return getHeadPoseFromMatrix(result) ?? getHeadPoseFromLandmarks(result);
-}
-
-function calculateHeadPoseDeviation(current: HeadPose, baseline: HeadPose): HeadPoseDeviation {
-  const yaw = normalizeAngleDelta(current.yaw, baseline.yaw);
-  const pitch = normalizeAngleDelta(current.pitch, baseline.pitch);
-  const roll = normalizeAngleDelta(current.roll, baseline.roll);
-  const magnitude = Math.sqrt(yaw * yaw + pitch * pitch + roll * roll);
-  const maxAxis = Math.max(Math.abs(yaw), Math.abs(pitch), Math.abs(roll));
-
-  return {
-    yaw,
-    pitch,
-    roll,
-    magnitude,
-    maxAxis,
-    tooMuch: magnitude >= HEAD_POSE_ROTATION_THRESHOLD_DEG || maxAxis >= HEAD_POSE_AXIS_THRESHOLD_DEG,
-  };
-}
-
 function detectGazeAway(
   result: FaceLandmarkerResult | null,
   thresholdX = DEFAULT_GAZE_THRESHOLD_X,
   thresholdY = DEFAULT_GAZE_THRESHOLD_Y,
   neutralX = 0,
   neutralY = 0,
+  calibration?: CalibrationResult | null,
   // optional smoothing ref to reduce jitter / sensitivity
   filterRef?: { current: { x: number; y: number; initialized: boolean } } | null,
   smoothingAlpha = 0.25,
 ) {
   const faceLandmarks = result?.faceLandmarks?.[0];
   const faceBlendshapes = result?.faceBlendshapes?.[0]?.categories ?? [];
+
+  const blendshapeNames = [
+    'eyeLookUpLeft',
+    'eyeLookUpRight',
+    'eyeLookDownLeft',
+    'eyeLookDownRight',
+    'eyeLookOutLeft',
+    'eyeLookOutRight',
+    'eyeLookInLeft',
+    'eyeLookInRight',
+  ];
 
   const getBlendshapeScore = (name: string) =>
     faceBlendshapes.find((category) => (category.categoryName || category.displayName || '').toLowerCase() === name.toLowerCase())?.score ?? 0;
@@ -260,14 +154,20 @@ function detectGazeAway(
   const adjOffsetX = rawOffsetX - neutralX;
   const adjOffsetY = rawOffsetY - neutralY;
 
-  // Thresholds are sanitized by eightDotCalibrationGuardV3 before live monitoring uses them.
-  // Do not expand them here using calibration extremes; that would allow fake calibration to enlarge the safe zone.
-  const effectiveThresholdX = thresholdX;
-  const effectiveThresholdUp = thresholdY * 0.9;
-  const effectiveThresholdDown = Math.max(
-    thresholdY * DOWNWARD_GAZE_THRESHOLD_FACTOR,
-    MIN_DOWNWARD_GAZE_THRESHOLD,
-  );
+  // Use calibration data to define a more intelligent valid zone
+  let effectiveThresholdX = thresholdX;
+  let effectiveThresholdY = thresholdY;
+
+  if (calibration?.pointData && calibration.pointData.length > 0) {
+    // Find the center point (id 'mc') to establish baseline
+    const centerPoint = calibration.pointData.find((p) => p.id === 'mc');
+    if (centerPoint && centerPoint.samples.length > 0) {
+      // Keep the center zone almost as large as the calibrated threshold so screen-edge gaze is still treated as on-screen.
+      const centerFactor = 0.95; // 95% of calibrated threshold
+      effectiveThresholdX = calibration.thresholdX * centerFactor;
+      effectiveThresholdY = calibration.thresholdY * centerFactor;
+    }
+  }
 
   // Apply optional exponential smoothing to reduce spurious detections from jitter.
   let useX = adjOffsetX;
@@ -289,60 +189,18 @@ function detectGazeAway(
     }
   }
 
-  const upBlendshapeScore = Math.min(upLeft, upRight);
-  const downBlendshapeScore = Math.min(downLeft, downRight);
-  const horizontalGazeAway = Math.abs(useX) >= effectiveThresholdX;
-  const upwardGazeAway = useY <= -effectiveThresholdUp;
-  const downwardGazeAway = useY >= effectiveThresholdDown;
-  const downwardGeometrySupport = Math.max(
-    effectiveThresholdDown * DOWNWARD_GEOMETRY_SUPPORT_FACTOR,
-    MIN_DOWNWARD_GEOMETRY_SUPPORT,
-  );
-  const downwardBlendshapeAway =
-    downBlendshapeScore >= DOWNWARD_BLENDSHAPE_AWAY_THRESHOLD &&
-    downBlendshapeScore > upBlendshapeScore + DOWNWARD_BLENDSHAPE_MARGIN &&
-    // Avoid triggering "down" from tiny positive-Y jitter. Blendshape can still help,
-    // but it now needs either mild geometry support or a very strong down score.
-    (
-      useY >= downwardGeometrySupport ||
-      downBlendshapeScore >= DOWNWARD_BLENDSHAPE_AWAY_THRESHOLD + 0.22
-    );
-
-  if (horizontalGazeAway || upwardGazeAway || downwardGazeAway || downwardBlendshapeAway) {
+  if (Math.abs(useX) >= effectiveThresholdX || Math.abs(useY) >= effectiveThresholdY) {
     const horizontal = useX > 0 ? 'left' : 'right';
-
-    // Geometry is still the primary signal, but MediaPipe's eyeLookUp/Down blendshapes
-    // are more reliable for distinguishing vertical direction when the eyelid hides the iris.
-    let vertical = useY > 0 || downwardBlendshapeAway ? 'down' : 'up';
-    let verticalSource: 'geometry' | 'blendshape' = downwardBlendshapeAway ? 'blendshape' : 'geometry';
-
-    if (
-      downBlendshapeScore >= VERTICAL_BLENDSHAPE_DIRECTION_THRESHOLD &&
-      downBlendshapeScore > upBlendshapeScore + VERTICAL_BLENDSHAPE_MARGIN
-    ) {
-      vertical = 'down';
-      verticalSource = 'blendshape';
-    } else if (
-      upBlendshapeScore >= VERTICAL_BLENDSHAPE_DIRECTION_THRESHOLD &&
-      upBlendshapeScore > downBlendshapeScore + VERTICAL_BLENDSHAPE_MARGIN
-    ) {
-      vertical = 'up';
-      verticalSource = 'blendshape';
-    }
-
-    // Use normalized strength so the lower downward threshold actually affects direction choice.
-    // Without this, small X jitter could still beat a real downward gaze.
-    const horizontalStrength = Math.abs(useX) / Math.max(effectiveThresholdX, 0.0001);
-    const verticalThreshold = useY > 0 || downwardBlendshapeAway ? effectiveThresholdDown : effectiveThresholdUp;
-    const verticalStrength = Math.abs(useY) / Math.max(verticalThreshold, 0.0001);
-    const horizontalDeadzoneMargin = 1.15;
-    const direction = horizontalStrength * horizontalDeadzoneMargin > verticalStrength && !downwardBlendshapeAway ? horizontal : vertical;
-
+    const vertical = useY > 0 ? 'down' : 'up';
+    // Add deadzone: require horizontal to be 1.25x larger than vertical to avoid false positives
+    // This prevents the "looking right when looking at monitor" issue
+    const horizontalDeadzoneMargin = 1.25;
+    const direction = Math.abs(useX) * horizontalDeadzoneMargin > Math.abs(useY) ? horizontal : vertical;
     return {
       away: true,
       direction,
-      confidence: Math.max(Math.abs(useX), Math.abs(useY), downwardBlendshapeAway ? downBlendshapeScore : 0),
-      source: (direction === vertical ? verticalSource : 'geometry') as const,
+      confidence: Math.max(Math.abs(useX), Math.abs(useY)),
+      source: 'geometry' as const,
     };
   }
 
@@ -363,34 +221,26 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
     phoneDetected: false,
     gazeAwayDetected: false,
     gazeDirection: 'center',
-    headMovementDetected: false,
-    headPoseDeviationDegrees: 0,
     lastObservationAt: null,
   });
   const missingSince = useRef<number | null>(null);
   const faceAlertAt = useRef<number>(0);
   const phoneAlertAt = useRef<number>(0);
   const gazeAlertAt = useRef<number>(0);
-  const headPoseAlertAt = useRef<number>(0);
   const multiFaceAlertAt = useRef<number>(0);
   const multiFaceSince = useRef<number | null>(null);
   const phoneSince = useRef<number | null>(null);
   const gazeSince = useRef<number | null>(null);
-  const headPoseSince = useRef<number | null>(null);
   const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
   const objectDetectorRef = useRef<ObjectDetector | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const frameTimerRef = useRef<number | null>(null);
   const aliveRef = useRef(true);
-  const safeCalibrationRef = useRef<SafeEightDotCalibration>(buildSafeEightDotCalibration(calibration));
+  const calibrationRef = useRef<CalibrationResult | null>(calibration);
   const gazeFilterRef = useRef<{ x: number; y: number; initialized: boolean }>({ x: 0, y: 0, initialized: false });
-  const headPoseBaselineRef = useRef<HeadPose | null>(null);
 
   useEffect(() => {
-    safeCalibrationRef.current = buildSafeEightDotCalibration(calibration);
-    gazeFilterRef.current = { x: 0, y: 0, initialized: false };
-    headPoseBaselineRef.current = null;
-    headPoseSince.current = null;
+    calibrationRef.current = calibration;
   }, [calibration]);
 
   function emit(eventType: string, severity: Severity, metadata: Record<string, unknown> = {}) {
@@ -421,8 +271,6 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
         phoneDetected: false,
         gazeAwayDetected: false,
         gazeDirection: 'center',
-        headMovementDetected: false,
-        headPoseDeviationDegrees: 0,
         lastObservationAt: null,
       });
 
@@ -458,7 +306,6 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
           minFacePresenceConfidence: 0.55,
           minTrackingConfidence: 0.55,
           outputFaceBlendshapes: true,
-          outputFacialTransformationMatrixes: true,
         }),
         ObjectDetector.createFromOptions(vision, {
           baseOptions: { modelAssetPath: OBJECT_MODEL_URL },
@@ -494,8 +341,6 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
             objectDetectorActive: !!objectTask,
             faceCount: 0,
             phoneDetected: false,
-            headMovementDetected: false,
-            headPoseDeviationDegrees: 0,
             lastObservationAt: Date.now(),
           }));
           frameTimerRef.current = window.setTimeout(tick, LIVE_INTERVAL_MS);
@@ -534,23 +379,16 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
 
         const faceCount = faceResult?.faceLandmarks?.length || 0;
         const detectedPhone = objectResult ? isPhoneDetection(objectResult) : false;
-        const safeCalibration = safeCalibrationRef.current;
         const gaze = detectGazeAway(
           faceResult,
-          safeCalibration.thresholdX ?? DEFAULT_GAZE_THRESHOLD_X,
-          safeCalibration.thresholdY ?? DEFAULT_GAZE_THRESHOLD_Y,
-          safeCalibration.neutralX ?? 0,
-          safeCalibration.neutralY ?? 0,
+          calibrationRef.current?.thresholdX ?? DEFAULT_GAZE_THRESHOLD_X,
+          calibrationRef.current?.thresholdY ?? DEFAULT_GAZE_THRESHOLD_Y,
+          calibrationRef.current?.neutralX ?? 0,
+          calibrationRef.current?.neutralY ?? 0,
+          calibrationRef.current,
           gazeFilterRef,
           0.18, // reduced from 0.28 for better filtering of false positives
         );
-
-        const headPose = faceCount === 1 ? estimateHeadPose(faceResult) : null;
-        if (headPose && !headPoseBaselineRef.current) {
-          headPoseBaselineRef.current = headPose;
-        }
-        const headPoseDeviation = headPose && headPoseBaselineRef.current ? calculateHeadPoseDeviation(headPose, headPoseBaselineRef.current) : null;
-        const headMovementDetected = Boolean(headPoseDeviation?.tooMuch);
 
         setState((current) => ({
           ...current,
@@ -561,18 +399,8 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
           phoneDetected: detectedPhone,
           gazeAwayDetected: gaze.away,
           gazeDirection: gaze.direction,
-          headMovementDetected,
-          headPoseDeviationDegrees: Math.round(headPoseDeviation?.magnitude ?? 0),
           lastObservationAt: Date.now(),
-          status: faceCount > 1
-            ? 'Multiple faces detected'
-            : detectedPhone
-              ? 'Phone detected'
-              : headMovementDetected
-                ? `Head moved too much (${Math.round(headPoseDeviation?.magnitude ?? 0)}°)`
-                : gaze.away
-                  ? `Looking away (${gaze.direction})`
-                  : 'Detection active',
+          status: faceCount > 1 ? 'Multiple faces detected' : detectedPhone ? 'Phone detected' : gaze.away ? `Looking away (${gaze.direction})` : 'Detection active',
         }));
 
         if (faceCount === 0) {
@@ -619,32 +447,11 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
               direction: gaze.direction,
               confidence: gaze.confidence,
               source: gaze.source,
-              calibrationTrusted: safeCalibration.trusted,
-              calibrationReason: safeCalibration.reason,
-              thresholdX: safeCalibration.thresholdX,
-              thresholdY: safeCalibration.thresholdY,
             });
             gazeSince.current = null;
           }
         } else {
           gazeSince.current = null;
-        }
-
-        if (headMovementDetected && headPoseDeviation && headPose) {
-          if (!headPoseSince.current) headPoseSince.current = Date.now();
-          if (Date.now() - (headPoseSince.current || 0) > HEAD_POSE_CONFIRM_MS) {
-            emitWithCooldown(headPoseAlertAt, 'HEAD_MOVEMENT_DETECTED', 'MEDIUM', {
-              deviationDegrees: Math.round(headPoseDeviation.magnitude),
-              maxAxisDegrees: Math.round(headPoseDeviation.maxAxis),
-              yawDelta: Math.round(headPoseDeviation.yaw),
-              pitchDelta: Math.round(headPoseDeviation.pitch),
-              rollDelta: Math.round(headPoseDeviation.roll),
-              source: headPose.source,
-            });
-            headPoseSince.current = null;
-          }
-        } else {
-          headPoseSince.current = null;
         }
 
         frameTimerRef.current = window.setTimeout(tick, LIVE_INTERVAL_MS);
@@ -665,8 +472,6 @@ export function useProctoring(sessionId: string, socket?: WebSocket | null, cali
         phoneDetected: false,
         gazeAwayDetected: false,
         gazeDirection: 'center',
-        headMovementDetected: false,
-        headPoseDeviationDegrees: 0,
         lastObservationAt: null,
       });
       emit('CAMERA_PERMISSION_DENIED', 'HIGH', { message: error instanceof Error ? error.message : 'getUserMedia failed' });
