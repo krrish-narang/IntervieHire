@@ -1,0 +1,4 @@
+.next/
+.vscode/
+apps/api/uploads/
+node_modules/

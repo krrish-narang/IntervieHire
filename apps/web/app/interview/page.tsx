@@ -1,12 +1,15 @@
  'use client';
  import { useEffect, useRef, useState } from 'react';
-import { WS_URL, API_URL } from '@/lib/api';
+ import { WS_URL, API_URL } from '@/lib/api';
+ import { GazeCalibration } from '@/hooks/GazeCalibration';
  import { useProctoring } from '@/hooks/useProctoring';
  import { useSpeechMetrics } from '@/hooks/useSpeechMetrics';
-import { Mic, Send, ShieldCheck, Timer, Video } from 'lucide-react';
+ import { Mic, Send, ShieldCheck, Timer, Video } from 'lucide-react';
+ import type { CalibrationResult } from '@/hooks/useGazeCalibration';
 
-export default function Interview(){
-  const [sessionId,setSessionId]=useState('demo-session');
+ export default function Interview(){
+   const [sessionId,setSessionId]=useState('demo-session');
+   const [calibration, setCalibration] = useState<CalibrationResult | null>(null);
   const [socket,setSocket]=useState<WebSocket|null>(null);
   const [messages,setMessages]=useState<any[]>([{speaker:'ai',text:'Welcome. I will ask a few structured questions. Please answer naturally with examples.'}]);
   const [text,setText]=useState('');
@@ -38,7 +41,16 @@ export default function Interview(){
     return()=>{ alive = false; ws.close(); };
   },[sessionId]);
 
-  const { videoRef, events, state }=useProctoring(sessionId, socket);
+  const { videoRef, events, state } = useProctoring(sessionId, socket, calibration);
+  const videoElement = (
+    <video
+      ref={videoRef}
+      muted
+      playsInline
+      className="absolute bottom-5 right-5 h-36 w-52 rounded-2xl border border-white/20 object-cover shadow-2xl"
+      style={{ display: calibration ? undefined : 'none' }}
+    />
+  );
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState('Idle');
   const mediaRecorderRef = useRef<MediaRecorder|null>(null);
@@ -157,6 +169,20 @@ export default function Interview(){
 
   return (
     <main className="min-h-screen bg-ink p-5 text-white">
+      {!calibration && (
+        <GazeCalibration
+          videoRef={videoRef}
+          onComplete={setCalibration}
+          onSkip={() => setCalibration({
+            thresholdX: 0.18,
+            thresholdY: 0.22,
+            neutralX: 0,
+            neutralY: 0,
+            pointData: [],
+            qualityScore: 0,
+          })}
+        />
+      )}
       <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[1fr_420px]">
         <section className="rounded-[2rem] bg-slate-950 p-5 shadow-2xl">
           <div className="mb-4 flex items-center justify-between">
@@ -186,7 +212,7 @@ export default function Interview(){
                 <p className="text-cyan-100">Avatar bridge ready: UE5 / WebRTC / Convai lip-sync payloads</p>
               </div>
             </div>
-            <video ref={videoRef} muted playsInline className="absolute bottom-5 right-5 h-36 w-52 rounded-2xl border border-white/20 object-cover shadow-2xl"/>
+            {videoElement}
           </div>
 
           <div className="mt-5 rounded-3xl bg-white p-4 text-ink">
