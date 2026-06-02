@@ -198,8 +198,8 @@ export function GazeCalibration({ videoRef, onComplete, onSkip }: Props) {
             </h1>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, width: '100%' }}>
               {[
-                ['01', 'Nine dots will appear on screen one at a time.'],
-                ['02', 'Look directly at each dot — keep your head still, move only your eyes.'],
+                ['01', 'Eight dots will appear on screen one at a time.'],
+                ['02', 'Look toward the edge of the screen, not directly at the dot. — keep your head still, move only your eyes.'],
                 ['03', 'Wait for the dot to turn green before the next one appears.'],
                 ['04', 'The whole process takes about 30 seconds.'],
               ].map(([n, text]) => (
