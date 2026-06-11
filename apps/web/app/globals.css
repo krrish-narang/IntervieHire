@@ -1,0 +1,2 @@
+@tailwind base; @tailwind components; @tailwind utilities;
+:root{color-scheme:light} body{background:#f8fafc;color:#06141B} .glass{background:rgba(255,255,255,.78);backdrop-filter:blur(18px);border:1px solid rgba(15,23,42,.08)}
