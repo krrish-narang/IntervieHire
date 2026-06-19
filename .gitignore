@@ -7,3 +7,9 @@ build/
 .env
 .env.local
 .env*.local
+
+# Claude Code per-user local settings (not shared)
+.claude/settings.local.json
+
+# Nested/duplicate testing project (has its own git repo)
+testing/

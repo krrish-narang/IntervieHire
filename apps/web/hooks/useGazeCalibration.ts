@@ -135,23 +135,24 @@ function median(values: number[]): number {
 }
 
 function computeResult(allPointSamples: PointSamples[]): CalibrationResult {
-  // Center point gives us the neutral baseline
-  const centerData = allPointSamples.find((p) => p.pointId === 'mc');
-  const neutralX = centerData ? median(centerData.samples.map((s) => s.offsetX)) : 0;
-  const neutralY = centerData ? median(centerData.samples.map((s) => s.offsetY)) : 0;
+  // The calibration sequence only samples the 8 perimeter points (there is no dedicated center
+  // capture), so derive the neutral eyes-forward baseline from the centroid of those points. The
+  // perimeter is symmetric about the screen center, so the median of each point's median offset
+  // approximates where the iris sits when looking straight ahead.
+  const pointMedians = allPointSamples.map((pd) => ({
+    medX: median(pd.samples.map((s) => s.offsetX)),
+    medY: median(pd.samples.map((s) => s.offsetY)),
+  }));
+  const neutralX = median(pointMedians.map((p) => p.medX));
+  const neutralY = median(pointMedians.map((p) => p.medY));
 
-  // For each non-center point, compute how far from neutral
-  // Threshold = 70% of the smallest observed deviation across edge points
-  // (conservative so normal head-with-eyes-center doesn't false-trigger)
+  // For each point, compute how far its iris offset sits from the neutral baseline.
   const edgeDeviationsX: number[] = [];
   const edgeDeviationsY: number[] = [];
 
-  for (const pd of allPointSamples) {
-    if (pd.pointId === 'mc') continue;
-    const medX = median(pd.samples.map((s) => s.offsetX));
-    const medY = median(pd.samples.map((s) => s.offsetY));
-    edgeDeviationsX.push(Math.abs(medX - neutralX));
-    edgeDeviationsY.push(Math.abs(medY - neutralY));
+  for (const pd of pointMedians) {
+    edgeDeviationsX.push(Math.abs(pd.medX - neutralX));
+    edgeDeviationsY.push(Math.abs(pd.medY - neutralY));
   }
 
   // Use 60th-percentile deviation as the threshold (not min, not max)

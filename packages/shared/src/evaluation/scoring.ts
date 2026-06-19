@@ -1,4 +1,5 @@
 import type {
+  EvalCandidateFacingReport,
   EvalCandidateReport,
   EvalConfidence,
   EvalInterviewContext,
@@ -118,10 +119,26 @@ export function aggregateEvalCandidateReport(
   );
   const redFlags = evaluations.flatMap((evaluation) => evaluation.redFlags);
   const recommendation = getRecommendation(overallScore, redFlags);
-  const recommendationConfidence = getRecommendationConfidence(evaluations);
+  // Hard recommendation cutoffs are unfair on a noisy LLM score: 87.9 vs 88.0 should not flip a
+  // decision with full confidence. Near a cutoff, force low confidence and route to human review.
+  const borderline = isBorderlineRecommendation(overallScore);
+  const recommendationConfidence = borderline ? "low" : getRecommendationConfidence(evaluations);
   const skillScores = buildSkillScores(evaluations);
   const competencyInsights = buildCompetencyInsights(skillScores);
   const candidateConfidence = buildCandidateConfidence(evaluations);
+  const baseNextSteps = topUniqueStrings(
+    evaluations.flatMap((evaluation) => evaluation.followUpRecommendations),
+    5,
+  );
+  const suggestedNextSteps = borderline
+    ? topUniqueStrings(
+        [
+          "Overall score is near a decision threshold; a human reviewer should confirm this recommendation before acting.",
+          ...baseNextSteps,
+        ],
+        5,
+      )
+    : baseNextSteps;
 
   return {
     interviewId: context.interviewId,
@@ -143,10 +160,7 @@ export function aggregateEvalCandidateReport(
     redFlags,
     skillScores,
     questionBreakdown: evaluations,
-    suggestedNextSteps: topUniqueStrings(
-      evaluations.flatMap((evaluation) => evaluation.followUpRecommendations),
-      5,
-    ),
+    suggestedNextSteps,
     transcriptOnly: true,
     futureSignalPlaceholders: {
       audioAnalysisEnabled: false,
@@ -191,13 +205,19 @@ function buildCandidateConfidence(
   };
 }
 
+// Total red-flag penalty is capped so that stacked flags cannot collapse every weak answer to the
+// same floor. A 30/100 and a 5/100 answer must remain distinguishable.
+export const MAX_RED_FLAG_PENALTY = 45;
+
 function calculateRedFlagPenalty(evaluation: EvalResponseEvaluation): number {
-  return evaluation.redFlags.reduce((penalty, flag) => {
+  const rawPenalty = evaluation.redFlags.reduce((penalty, flag) => {
     if (flag.severity === "critical") return penalty + 35;
     if (flag.severity === "high") return penalty + 20;
     if (flag.severity === "medium") return penalty + 10;
     return penalty + 3;
   }, 0);
+
+  return Math.min(rawPenalty, MAX_RED_FLAG_PENALTY);
 }
 
 function getQuestionAggregationWeight(evaluation: EvalResponseEvaluation): number {
@@ -398,4 +418,65 @@ function topUniqueStrings(values: string[], limit: number): string[] {
   }
 
   return output;
+}
+
+const RECOMMENDATION_CUTOFFS = [55, 72, 88];
+const BORDERLINE_MARGIN = 3;
+
+export function isBorderlineRecommendation(overallScore: number): boolean {
+  return RECOMMENDATION_CUTOFFS.some((cutoff) => Math.abs(overallScore - cutoff) <= BORDERLINE_MARGIN);
+}
+
+// Score at/above which a skill reads as a strength in candidate-facing feedback.
+const CANDIDATE_STRENGTH_THRESHOLD = 70;
+
+/**
+ * Builds the candidate-safe projection of a report. Derived from competency rankings but stripped
+ * of every number, question, answer, recommendation, and rubric/dimension mechanic. Deterministic
+ * (no LLM) so it cannot fabricate feedback or leak internals.
+ */
+export function buildCandidateFacingReport(report: EvalCandidateReport): EvalCandidateFacingReport {
+  const ranked = [...report.skillScores].sort((a, b) => b.score - a.score);
+  const strongSkills = ranked.filter((skill) => skill.score >= CANDIDATE_STRENGTH_THRESHOLD).slice(0, 4);
+  const weakSkills = [...ranked].reverse().filter((skill) => skill.score < CANDIDATE_STRENGTH_THRESHOLD).slice(0, 4);
+
+  const strengthSource = strongSkills.length ? strongSkills : ranked.slice(0, 2);
+  const strengthKeys = new Set(strengthSource.map((skill) => skill.skill));
+  const growthSource = (weakSkills.length ? weakSkills : [...ranked].reverse().slice(0, 2)).filter(
+    (skill) => !strengthKeys.has(skill.skill),
+  );
+
+  const strengths = strengthSource.map((skill) => candidateStrengthPhrase(formatSkillName(skill.skill)));
+  const growthAreas = growthSource.map((skill) => candidateGrowthPhrase(formatSkillName(skill.skill)));
+
+  return {
+    roleTitle: report.roleTitle,
+    strengths: strengths.length
+      ? strengths
+      : ["You engaged with the interview and shared relevant experience."],
+    growthAreas: growthAreas.length
+      ? growthAreas
+      : ["Keep practising structured, specific answers backed by concrete examples."],
+    encouragementSummary: candidateEncouragement(report.overallScore),
+  };
+}
+
+function candidateStrengthPhrase(label: string): string {
+  return `You came across well on ${label}.`;
+}
+
+function candidateGrowthPhrase(label: string): string {
+  return `There is room to grow in ${label} — practise going deeper with concrete, specific examples.`;
+}
+
+function candidateEncouragement(overallScore: number): string {
+  if (overallScore >= 72) {
+    return "You demonstrated strong, well-rounded performance in this interview. Keep building on the areas below to grow even further.";
+  }
+
+  if (overallScore >= 55) {
+    return "You showed a solid foundation with clear room to grow. Focusing on the areas below will strengthen your future interviews.";
+  }
+
+  return "Thank you for completing the interview. The areas below are the best places to focus your practice going forward.";
 }

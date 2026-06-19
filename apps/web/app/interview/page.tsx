@@ -225,7 +225,6 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
       setIsRecording(false);
       setRecordingStatus('Stopping...');
     }catch(e){console.error(e);}
-    try{ mediaRecorderRef.current?.stop(); setIsRecording(false); setRecordingStatus('Stopping...'); }catch(e){console.error(e);}
   }
 
   function startSpeechToText(){
@@ -309,14 +308,18 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
   function startAnswerRecording(){
     if (answerRecorderRef.current || isTranscribingAnswer) return;
 
-    const stream = videoRef.current?.srcObject as MediaStream | null;
-    if (!stream?.getAudioTracks().length) {
+    // The camera stream (videoRef) is captured with audio:false, so its audio tracks are empty.
+    // Use the dedicated microphone stream from the transcription hook instead.
+    const liveMicTracks = getMicrophoneStream()
+      ?.getAudioTracks()
+      .filter((track) => track.readyState === 'live') ?? [];
+    if (!liveMicTracks.length) {
       setSpeechStatus('Microphone stream is not ready');
       return;
     }
 
     try {
-      const audioStream = new MediaStream(stream.getAudioTracks());
+      const audioStream = new MediaStream(liveMicTracks);
       const recorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
       answerChunksRef.current = [];
       recorder.ondataavailable = (event) => {
@@ -434,11 +437,9 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
       endProctoringSession();
       const completeResponse = await fetch(`${API_URL}/api/interview/sessions/${sessionId}/complete`, { method: 'POST' });
       if (!completeResponse.ok) throw new Error(`Session completion failed (${completeResponse.status})`);
-      const evaluationResponse = await fetch(`${API_URL}/api/interview/sessions/${sessionId}/evaluate`, { method: 'POST' });
-      if (!evaluationResponse.ok) throw new Error(`Session evaluation failed (${evaluationResponse.status})`);
       setRecordingStatus('Session completed');
-      await fetch(`${API_URL}/api/interview/sessions/${sessionId}/complete`, { method: 'POST' });
       const evalRes = await fetch(`${API_URL}/api/interview/sessions/${sessionId}/evaluate`, { method: 'POST' });
+      if (!evalRes.ok) throw new Error(`Session evaluation failed (${evalRes.status})`);
       const evalJson = await parseApiResponse<any>(evalRes);
       if (evalJson?.evaluation) setEvaluationReport(evalJson.evaluation);
       const sessionRes = await fetch(`${API_URL}/api/interview/sessions/${sessionId}`);

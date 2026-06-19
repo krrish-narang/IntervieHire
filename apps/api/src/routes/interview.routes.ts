@@ -1,12 +1,34 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../lib/prisma.js';
-import { evaluateInterview, generatePdfReport } from '../services/evaluation.service.js';
+import { evaluateInterview, generatePdfReport, getCandidateFacingReport } from '../services/evaluation.service.js';
 import nodemailer from 'nodemailer';
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildVapiAssistantConfig } from '../services/vapi-config.service.js';
 import { processRecordingForSession, transcribeUploadedFile } from '../services/transcription.service.js';
 import { handleCandidateTranscript } from '../services/interview-conversation.service.js';
+
+type SpeechTranscriptSegment = {
+  speaker: 'candidate';
+  text: string;
+  timestamp: string;
+  source: 'speech_to_text';
+};
+
+// Reads the session.transcript JSON column (stored as an array, but tolerant of a stringified array)
+// into a workable list of transcript entries.
+function readTranscript(raw: unknown): any[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
 
 const juniorSdeQuestions = [
   {
@@ -240,6 +262,8 @@ export async function interviewRoutes(app: FastifyInstance) {
   });
   app.post('/sessions/:id/evaluate', async (req:any) => ({evaluation: await evaluateInterview(req.params.id)}));
   app.post('/sessions/:id/report', async (req:any) => ({filePath: await generatePdfReport(req.params.id)}));
+  // Candidate-safe report: qualitative strengths/growth only. Never returns the full evaluation.
+  app.get('/sessions/:id/candidate-report', async (req:any) => ({report: await getCandidateFacingReport(req.params.id)}));
   app.post('/sessions/:id/email-report', async (req:any) => {
     const session = await prisma.interviewSession.findUnique({where:{id:req.params.id}, include:{company:true,candidate:true}});
     if (!session) throw new Error('Session not found');

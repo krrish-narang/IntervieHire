@@ -115,6 +115,75 @@ export function getEvalDimensionWeights(
   return EVAL_INTERVIEW_TYPE_WEIGHTS[interviewType] ?? EVAL_UNIVERSAL_WEIGHTS;
 }
 
+/**
+ * Maps a question type to the interview type it most strongly implies. Types that do not
+ * point to a single interview style (general/followup/custom) intentionally have no mapping
+ * so they do not skew inference.
+ */
+const QUESTION_TYPE_TO_INTERVIEW_TYPE: Partial<Record<EvalQuestionType, EvalInterviewType>> = {
+  technical_theory: "technical",
+  coding: "technical",
+  system_design: "system_design",
+  behavioral: "behavioral",
+  case_study: "case_study",
+  sales_roleplay: "sales",
+  hr_screening: "hr_screening",
+};
+
+/**
+ * Infers the interview type from the mix of question types actually used in an interview.
+ * Returns the single implied type when all signal-bearing questions agree, "mixed" when they
+ * conflict, and null when no question type carries a signal (caller should fall back to role).
+ */
+export function inferEvalInterviewType(
+  questionTypes: Array<EvalQuestionType | undefined | null>,
+): EvalInterviewType | null {
+  const votes = new Set<EvalInterviewType>();
+
+  for (const questionType of questionTypes) {
+    const mapped = questionType ? QUESTION_TYPE_TO_INTERVIEW_TYPE[questionType] : undefined;
+    if (mapped) {
+      votes.add(mapped);
+    }
+  }
+
+  if (votes.size === 0) {
+    return null;
+  }
+
+  if (votes.size === 1) {
+    return [...votes][0];
+  }
+
+  return "mixed";
+}
+
+/**
+ * Dev-time guard: returns a list of weight tables whose weights do not sum to ~100.
+ * Weighting is normalized at scoring time, so this is a correctness aid, not a runtime gate.
+ */
+export function validateEvalWeightTables(): string[] {
+  const problems: string[] = [];
+  const check = (label: string, weights: EvalDimensionWeights) => {
+    const total = Object.values(weights).reduce((sum, weight) => sum + weight, 0);
+    if (Math.abs(total - 100) > 0.01) {
+      problems.push(`${label} weights sum to ${total}, expected 100`);
+    }
+  };
+
+  check("universal", EVAL_UNIVERSAL_WEIGHTS);
+  for (const [type, weights] of Object.entries(EVAL_INTERVIEW_TYPE_WEIGHTS)) {
+    check(`interviewType:${type}`, weights);
+  }
+  for (const [type, weights] of Object.entries(EVAL_QUESTION_TYPE_WEIGHTS)) {
+    if (weights) {
+      check(`questionType:${type}`, weights);
+    }
+  }
+
+  return problems;
+}
+
 export function normalizeEvalWeights(weights: EvalDimensionWeights): EvalDimensionWeights {
   const total = Object.values(weights).reduce((sum, weight) => sum + weight, 0);
 
