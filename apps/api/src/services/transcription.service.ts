@@ -1,23 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { prisma } from '../lib/prisma.js';
-import { callDeepSeek } from './deepseek.service.js';
 
-export async function transcribeWithOpenAI(filePath: string) {
+export async function transcribeWithOpenAI(filePath: string): Promise<string | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || apiKey === 'replace-me') return null;
+  // Node's global fetch uses undici, whose FormData rejects Node ReadStreams. Send the file as a
+  // Blob built from its bytes so multipart upload to Whisper actually contains the audio.
+  const fileBuffer = await fs.promises.readFile(filePath);
   const form = new FormData();
-  form.append('file', fs.createReadStream(filePath) as any);
+  form.append('file', new Blob([fileBuffer]), path.basename(filePath));
   form.append('model', 'whisper-1');
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form });
   if (!res.ok) throw new Error(`OpenAI transcription failed: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  return data.text as string;
+  const data = await res.json() as { text?: unknown };
+  return typeof data.text === 'string' ? data.text : null;
 }
 
-export async function transcribeUploadedFile(filePath: string) {
+export async function transcribeUploadedFile(filePath: string): Promise<string | null> {
   const transcriptText = await transcribeWithOpenAI(filePath);
-  return transcriptText?.trim() || 'Transcript unavailable.';
+  return transcriptText?.trim() || null;
 }
 
 function simpleQuestionFit(transcript: string, questions: Array<{ id?: string; text: string }>) {
@@ -46,19 +48,9 @@ export async function processRecordingForSession(sessionId: string, filename: st
   try {
     transcriptText = await transcribeUploadedFile(filePath);
   } catch (err) {
-    // fallback: call LLM for a mock transcript summary when OpenAI key absent
-    const session = await prisma.interviewSession.findUnique({ where: { id: sessionId }, include: { jobRole: true } });
-    if (session) {
-      const prompt = `Generate a short mock transcript for a ${session.jobRole.title} interview answering questions: ${session.jobRole.title}`;
-      try {
-        transcriptText = await callDeepSeek([{ role: 'user', content: prompt }], {
-          maxOutputTokens: 600,
-          temperature: 0.3,
-        });
-      } catch (e) {
-        transcriptText = 'Transcript unavailable.';
-      }
-    }
+    // Transcription failed (provider error). Do not fabricate a transcript: inventing candidate
+    // answers would corrupt the evaluation, which must score only real transcript content.
+    transcriptText = null;
   }
 
   if (!transcriptText) transcriptText = 'Transcript unavailable.';

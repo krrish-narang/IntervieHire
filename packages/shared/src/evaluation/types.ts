@@ -248,3 +248,15 @@ export interface EvalTurnLink {
   followupQuestionId: string;
   followupAnswerId?: string;
 }
+
+/**
+ * Candidate-safe projection of the evaluation. Intentionally contains NO numeric scores, no
+ * questions or answers, no recommendation, and no rubric/dimension mechanics — only qualitative
+ * growth feedback the candidate is allowed to see. The full EvalCandidateReport is company-only.
+ */
+export interface EvalCandidateFacingReport {
+  roleTitle: string;
+  strengths: string[];
+  growthAreas: string[];
+  encouragementSummary: string;
+}

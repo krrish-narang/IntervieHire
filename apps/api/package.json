@@ -9,6 +9,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev --name init",
     "seed": "tsx prisma/seed.ts",
+    "eval:demo": "tsx scripts/eval-demo.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
